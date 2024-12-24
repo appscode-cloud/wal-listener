@@ -3,15 +3,16 @@ package main
 import (
 	"encoding/binary"
 	"fmt"
+	"github.com/ihippik/wal-listener/v2/apis"
 	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	scfg "github.com/ihippik/config"
 	"github.com/urfave/cli/v2"
 
-	"github.com/ihippik/wal-listener/v2/internal/config"
 	"github.com/ihippik/wal-listener/v2/internal/listener"
 	"github.com/ihippik/wal-listener/v2/internal/listener/transaction"
 )
@@ -32,7 +33,7 @@ func main() {
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:    "config",
-				Value:   "config.yml",
+				Value:   "config_example.yml",
 				Aliases: []string{"c"},
 				Usage:   "path to config file",
 			},
@@ -41,7 +42,7 @@ func main() {
 			ctx, cancel := signal.NotifyContext(c.Context, syscall.SIGINT, syscall.SIGTERM)
 			defer cancel()
 
-			cfg, err := config.InitConfig(c.String("config"))
+			cfg, err := apis.InitConfig(c.String("config"))
 			if err != nil {
 				return fmt.Errorf("get config: %w", err)
 			}
@@ -58,11 +59,14 @@ func main() {
 
 			go scfg.InitMetrics(cfg.Monitoring.PromAddr, logger)
 
-			conn, rConn, err := initPgxConnections(cfg.Database, logger)
+			conn, rConn, err := initPgxConnections(cfg.Database, logger, time.Minute*30)
 			if err != nil {
 				return fmt.Errorf("pgx connection: %w", err)
 			}
 
+			if err = configureReplicaIdentityToFull(conn, cfg.Listener.Filter); err != nil {
+				return fmt.Errorf("configure replica identity: %w", err)
+			}
 			pub, err := factoryPublisher(ctx, cfg.Publisher, logger)
 			if err != nil {
 				return fmt.Errorf("factory publisher: %w", err)
@@ -81,7 +85,7 @@ func main() {
 				rConn,
 				pub,
 				transaction.NewBinaryParser(logger, binary.BigEndian),
-				config.NewMetrics(),
+				apis.NewMetrics(),
 			)
 
 			go svc.InitHandlers(ctx)
